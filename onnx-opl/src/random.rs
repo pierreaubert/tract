@@ -198,8 +198,8 @@ mod rand_compat_tests {
         let high = tensor0(3.0_f32);
         let mut first = Tensor::zero::<f32>(&[4_096])?;
         let mut replay = Tensor::zero::<f32>(&[4_096])?;
-        sample_uniform(&mut first, &mut SmallRng::seed_from_u64(17), &low, &high)?;
-        sample_uniform(&mut replay, &mut SmallRng::seed_from_u64(17), &low, &high)?;
+        sample_uniform::<f32>(&mut first, &mut SmallRng::seed_from_u64(17), &low, &high)?;
+        sample_uniform::<f32>(&mut replay, &mut SmallRng::seed_from_u64(17), &low, &high)?;
         let samples = first.as_slice::<f32>()?;
         assert_eq!(samples, replay.as_slice::<f32>()?);
         assert!(samples.iter().all(|&sample| (-2.0..3.0).contains(&sample)));
@@ -245,8 +245,8 @@ mod rand_compat_tests {
         let deviation = tensor0(0.5_f32);
         let mut first = Tensor::zero::<f32>(&[8_192])?;
         let mut replay = Tensor::zero::<f32>(&[8_192])?;
-        sample_normal(&mut first, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
-        sample_normal(&mut replay, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
+        sample_normal::<f32>(&mut first, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
+        sample_normal::<f32>(&mut replay, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
         let samples = first.as_slice::<f32>()?;
         assert_eq!(samples, replay.as_slice::<f32>()?);
         let observed_mean = samples.iter().map(|&sample| sample as f64).sum::<f64>()
