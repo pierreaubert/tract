@@ -1,7 +1,7 @@
-use rand::distributions::Standard;
-use rand::prelude::Distribution;
+use rand::distr::StandardUniform;
+use rand::distr::Distribution;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use tract_nnef::internal::*;
 use tract_nnef::tract_ndarray::s;
@@ -29,7 +29,7 @@ impl Multinomial {
     fn eval_t0<T1>(&self, input: TValue) -> TractResult<TValue>
     where
         T1: Datum + std::ops::SubAssign + Float + std::iter::Sum,
-        Standard: Distribution<T1>,
+        StandardUniform: Distribution<T1>,
     {
         match self.dtype {
             DatumType::I32 => self.eval_t::<T1, i32>(input),
@@ -40,14 +40,14 @@ impl Multinomial {
     fn eval_t<T1, T2>(&self, input: TValue) -> TractResult<TValue>
     where
         T1: Datum + std::ops::SubAssign + Float + std::iter::Sum,
-        Standard: Distribution<T1>,
+        StandardUniform: Distribution<T1>,
         T2: Datum + Zero + Copy,
         usize: AsPrimitive<T2>,
     {
         let batch_size = input.shape()[0];
         let class_size = input.shape()[1];
 
-        let mut rng = self.seed.map_or_else(SmallRng::from_entropy, |seed| {
+        let mut rng = self.seed.map_or_else(rand::make_rng, |seed| {
             SmallRng::seed_from_u64(seed.to_bits() as _)
         });
 
@@ -66,7 +66,7 @@ impl Multinomial {
         let output = tract_ndarray::ArrayD::from_shape_fn(out_shape, |co_o| -> T2 {
             let batch = co_o[0];
 
-            let mut rand = rng.r#gen::<T1>() * maximums[batch];
+            let mut rand = rng.random::<T1>() * maximums[batch];
             let mut ret: T2 = usize::as_(class_size - 1);
 
             for (i, prob) in input.slice(s![batch, ..]).iter().enumerate() {
@@ -178,4 +178,22 @@ fn load(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractRes
 
     let op = Multinomial { dtype, sample_size, seed };
     builder.wire(op, &[input])
+}
+
+#[cfg(test)]
+mod rand_compat_tests {
+    use super::*;
+
+    #[test]
+    fn seeded_multinomial_replays_and_only_selects_possible_classes() -> TractResult<()> {
+        let op = Multinomial { dtype: DatumType::I32, sample_size: 512, seed: Some(7.0) };
+        let logits = tensor2(&[[0.0_f32, 0.0, f32::NEG_INFINITY]]);
+        let first = op.eval_t::<f32, i32>(logits.clone().into_tvalue())?;
+        let replay = op.eval_t::<f32, i32>(logits.into_tvalue())?;
+        let samples = first.as_slice::<i32>()?;
+        assert_eq!(samples, replay.as_slice::<i32>()?);
+        assert!(samples.iter().all(|&class| class == 0 || class == 1));
+        assert!(samples.contains(&0) && samples.contains(&1));
+        Ok(())
+    }
 }

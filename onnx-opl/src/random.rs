@@ -1,5 +1,5 @@
-use rand::distributions::uniform::SampleUniform;
-use rand::prelude::Distribution;
+use rand::distr::uniform::SampleUniform;
+use rand::distr::Distribution;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::num_traits::Float;
@@ -113,7 +113,7 @@ impl EvalOp for Random {
         _session: &mut SessionState,
         _node_id: usize,
     ) -> TractResult<Option<Box<dyn OpState>>> {
-        let rng = self.seed.map(SmallRng::seed_from_u64).unwrap_or_else(SmallRng::from_entropy);
+        let rng = self.seed.map(SmallRng::seed_from_u64).unwrap_or_else(rand::make_rng);
         Ok(Some(Box::new(RandomState(rng))))
     }
 }
@@ -168,7 +168,7 @@ fn sample_uniform<T: Datum + SampleUniform + Copy>(
     high: &Tensor,
 ) -> TractResult<()> {
     let dist =
-        rand::distributions::Uniform::new(low.cast_to_scalar::<T>()?, high.cast_to_scalar::<T>()?);
+        rand::distr::Uniform::new(low.cast_to_scalar::<T>()?, high.cast_to_scalar::<T>()?)?;
     t.as_slice_mut::<T>()?.iter_mut().zip(dist.sample_iter(r)).for_each(|(v, r)| *v = r);
     Ok(())
 }
@@ -186,4 +186,77 @@ where
         rand_distr::Normal::<T>::new(mean.cast_to_scalar::<T>()?, dev.cast_to_scalar::<T>()?)?;
     t.as_slice_mut::<T>()?.iter_mut().zip(dist.sample_iter(r)).for_each(|(v, r)| *v = r);
     Ok(())
+}
+
+#[cfg(test)]
+mod rand_compat_tests {
+    use super::*;
+
+    #[test]
+    fn seeded_uniform_replays_and_stays_within_bounds() -> TractResult<()> {
+        let low = tensor0(-2.0_f32);
+        let high = tensor0(3.0_f32);
+        let mut first = Tensor::zero::<f32>(&[4_096])?;
+        let mut replay = Tensor::zero::<f32>(&[4_096])?;
+        sample_uniform(&mut first, &mut SmallRng::seed_from_u64(17), &low, &high)?;
+        sample_uniform(&mut replay, &mut SmallRng::seed_from_u64(17), &low, &high)?;
+        let samples = first.as_slice::<f32>()?;
+        assert_eq!(samples, replay.as_slice::<f32>()?);
+        assert!(samples.iter().all(|&sample| (-2.0..3.0).contains(&sample)));
+        assert!(samples.iter().any(|&sample| sample < 0.0));
+        assert!(samples.iter().any(|&sample| sample > 1.0));
+        let observed_mean = samples.iter().map(|&sample| sample as f64).sum::<f64>()
+            / samples.len() as f64;
+        let observed_variance = samples.iter().map(|&sample| {
+            let residual = sample as f64 - observed_mean;
+            residual * residual
+        }).sum::<f64>() / samples.len() as f64;
+        assert!((observed_mean - 0.5).abs() < 0.1);
+        assert!((observed_variance - 25.0 / 12.0).abs() < 0.15);
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_random_operator_advances_and_replays_after_state_reset() -> TractResult<()> {
+        let op = Random {
+            fact: f32::fact(&[64]),
+            dist: Dist::Uniform {
+                low: rctensor0(-1.0_f32),
+                high: rctensor0(1.0_f32),
+            },
+            seed: Some(37),
+        };
+        let mut session = SessionState::default();
+        let mut state = op.state(&mut session, 0)?.expect("Random has state");
+        let first = state.eval(&mut session, &op, tvec!())?.remove(0);
+        let second = state.eval(&mut session, &op, tvec!())?.remove(0);
+        assert_ne!(first.as_slice::<f32>()?, second.as_slice::<f32>()?);
+        let mut reset = op.state(&mut session, 0)?.expect("Random has reset state");
+        let replay_first = reset.eval(&mut session, &op, tvec!())?.remove(0);
+        let replay_second = reset.eval(&mut session, &op, tvec!())?.remove(0);
+        assert_eq!(first.as_slice::<f32>()?, replay_first.as_slice::<f32>()?);
+        assert_eq!(second.as_slice::<f32>()?, replay_second.as_slice::<f32>()?);
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_normal_replays_with_requested_mean_and_variance() -> TractResult<()> {
+        let mean = tensor0(1.25_f32);
+        let deviation = tensor0(0.5_f32);
+        let mut first = Tensor::zero::<f32>(&[8_192])?;
+        let mut replay = Tensor::zero::<f32>(&[8_192])?;
+        sample_normal(&mut first, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
+        sample_normal(&mut replay, &mut SmallRng::seed_from_u64(29), &mean, &deviation)?;
+        let samples = first.as_slice::<f32>()?;
+        assert_eq!(samples, replay.as_slice::<f32>()?);
+        let observed_mean = samples.iter().map(|&sample| sample as f64).sum::<f64>()
+            / samples.len() as f64;
+        let observed_variance = samples.iter().map(|&sample| {
+            let residual = sample as f64 - observed_mean;
+            residual * residual
+        }).sum::<f64>() / samples.len() as f64;
+        assert!((observed_mean - 1.25).abs() < 0.05);
+        assert!((observed_variance - 0.25).abs() < 0.04);
+        Ok(())
+    }
 }
